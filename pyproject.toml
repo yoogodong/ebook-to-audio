@@ -1,7 +1,20 @@
 [project]
 name = "ebook-to-audio"
 version = "0.1.0"
-description = "Add your description here"
+description = "文本转音频工具，使用 Edge TTS 服务将文本文件转换为 MP3 音频文件"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "edge-tts>=7.2.7",
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["*.py"]
+

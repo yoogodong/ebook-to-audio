@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# temp test files
+*.mp3
+*.txt
