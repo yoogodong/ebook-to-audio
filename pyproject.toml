@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "edge-tts>=7.2.7",
+    "pyqt5>=5.15.10",
 ]
 
 [build-system]
