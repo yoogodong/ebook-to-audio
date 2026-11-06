@@ -1,141 +1,143 @@
 # ebook-to-audio
 
-把电子书文本转换成语音（mp3 / m4b），使用微软 Edge TTS（`edge-tts` 库，免费、无需 API Key）。
+**English** | [简体中文](README.zh-CN.md)
 
-## 目前支持
+Convert e-book text into speech (MP3 / M4B) with Microsoft Edge TTS through the [`edge-tts`](https://github.com/rany2/edge-tts) library. It is free and does not require an API key.
 
-- **默认输出 m4b；默认中文播音员为云健（`zh-CN-YunjianNeural`）**
-- `.txt` → `.m4b` / `.mp3` / 两者，自动按句切分，每块不超过 900 字
-- `.epub` → 按章节输出 m4b + 章节 mp3；可选合并 mp3
-- EPUB 解析使用标准库：spine 阅读顺序、EPUB3 nav / EPUB2 NCX 目录、TOC 锚点细切、h1–h6 兜底
-- 分块合成，单块失败自动重试，可配置并发数
-- 断点续传：中间块缓存在 `<输出文件>.parts/`；EPUB 另用 `manifest.json` 按章跳过已完成内容
-- 合并为单个 mp3；全部成功后自动清理缓存，失败或取消时保留缓存
-- m4b 输出：AAC 音频、章节标记、书名/作者/流派元数据、可选封面（需要系统 `ffmpeg`/`ffprobe`）
-- 命令行 + PyQt5 图形界面（拖放、选音色、试听、进度、取消）
-- 可调音色、语速、音量、音调
+## Features
 
-## 环境
+- **M4B is the default output format; the default Chinese narrator is Yun Jian (`zh-CN-YunjianNeural`)**
+- `.txt` to `.m4b`, `.mp3`, or both, with automatic sentence-aware splitting into chunks of at most 900 characters
+- `.epub` to a chapter-marked M4B plus per-chapter MP3 files, with an optional merged MP3
+- EPUB parsing uses only the Python standard library: spine reading order, EPUB3 nav / EPUB2 NCX tables of contents, TOC-anchor splitting, and heading (`h1`-`h6`) fallback
+- Chunked synthesis with automatic retries and configurable concurrency
+- Resumable conversions: intermediate chunks are cached in `<output-file>.parts/`; EPUB jobs also use a `manifest.json` to skip completed chapters
+- Merge all chapters into one MP3; caches are removed after success and retained after failure or cancellation
+- M4B output with AAC audio, chapter markers, title/author/genre metadata, and an optional cover image (requires system `ffmpeg` / `ffprobe`)
+- Command-line interface and a PyQt5 GUI with drag and drop, voice selection, preview, progress, and cancellation
+- Adjustable voice, rate, volume, and pitch
 
-使用 uv 管理环境：
+## Requirements
+
+This project uses [uv](https://docs.astral.sh/uv/) to manage its environment:
 
 ```bash
 uv sync
 ```
 
-m4b 输出还需要系统 ffmpeg/ffprobe：
+M4B output also requires system `ffmpeg` and `ffprobe`:
 
 ```bash
 brew install ffmpeg          # macOS
 sudo apt install ffmpeg      # Debian/Ubuntu
 ```
 
-## 用法
+## Usage
 
-### 命令行
+### Command line
 
 ```bash
-# 转换 a.txt，默认输出 a.m4b（默认音色：云健）
+# Convert a.txt; the default output is a.m4b (default voice: Yun Jian)
 uv run ebook-to-audio a.txt
 
-# 指定音色、语速、输出路径
+# Select a voice and rate, and set the output path
 uv run ebook-to-audio a.txt -v zh-CN-XiaoxiaoNeural --rate=-10% -o out.m4b
 
-# 只输出 mp3
+# Produce MP3 only
 uv run ebook-to-audio a.txt -f mp3
 
-# 同时输出 mp3 和 m4b
+# Produce both MP3 and M4B
 uv run ebook-to-audio a.txt -f both -o book
 
-# 提高并发请求数（默认 3，范围 1–8；过高可能被服务端限流）
+# Increase concurrent requests (default: 3; range: 1-8; higher values may be rate-limited)
 uv run ebook-to-audio a.txt -j 4
 
-# 不传文件时交互输入
+# Prompt for the input file when no file is supplied
 uv run ebook-to-audio
 ```
 
-`-o` 给的是输出主名，实际文件按格式生成 `<主名>.mp3` / `<主名>.m4b`。m4b 模式下默认保留中间 mp3；加 `--no-mp3` 会在导出成功后删除它。
+`-o` specifies the output basename; the actual files are generated as `<basename>.mp3` and/or `<basename>.m4b`, depending on the selected format. In M4B mode, intermediate MP3 files are kept by default. Add `--no-mp3` to delete them after a successful export.
 
 ### EPUB
 
 ```bash
-# 默认输出：book.m4b + book_chapters/（默认音色：云健）
+# Default output: book.m4b + book_chapters/ (default voice: Yun Jian)
 uv run ebook-to-audio book.epub
 
-# 同时输出 mp3 与 m4b
+# Produce both MP3 and M4B
 uv run ebook-to-audio book.epub -f both -o out/book
 
-# 只输出 mp3
+# Produce MP3 only
 uv run ebook-to-audio book.epub -f mp3
 
-# 只按目录第二层切章
+# Split chapters using the second TOC level
 uv run ebook-to-audio book.epub --chapter-level 2
 
-# 超长章节按 2 万字再切，并在每章开头朗读标题
+# Split oversized chapters at 20,000 characters and read the title at the start of each chapter
 uv run ebook-to-audio book.epub --max-chapter-chars 20000 --read-title
 
-# 导出完成后删除章节 mp3，只留全书文件
+# Remove chapter MP3 files after export and keep only the complete book
 uv run ebook-to-audio book.epub --no-chapters
 ```
 
-EPUB 的输出：
+EPUB output:
 
-- `<主名>_chapters/001_章节标题.mp3`：每章一个音频，按 spine/TOC 顺序编号
-- `<主名>_chapters/manifest.json`：源文件哈希、音色参数、章节文本哈希与状态，重跑时跳过未变化的章节
-- `<主名>.mp3`：全书合并（`-f mp3` 或 `-f both` 时生成）
-- `<主名>.m4b`：默认输出，带章节标记、书名/作者/流派元数据和封面
+- `<basename>_chapters/001_<chapter-title>.mp3`: one audio file per chapter, numbered in spine/TOC order
+- `<basename>_chapters/manifest.json`: source-file hash, voice settings, chapter-text hashes, and status; unchanged chapters are skipped on subsequent runs
+- `<basename>.mp3`: the merged book (generated with `-f mp3` or `-f both`)
+- `<basename>.m4b`: the default output, with chapter markers, title/author/genre metadata, and a cover image
 
-m4b 是默认格式；没有安装 ffmpeg 时会报错，可用 `-f mp3` 只输出 mp3。
+M4B is the default format. If `ffmpeg` is unavailable, the command reports an error; use `-f mp3` to produce MP3 only.
 
-章节归属以 spine（阅读顺序）为准，TOC 只提供标题和层级；目录缺失时回退到 h1–h6 或整文件一章。过短、几乎无文字的章节会被跳过；DRM 加密、固定版式或纯图片章节会被跳过/报错，不做 OCR。
+Chapter ownership follows the spine (reading order); the TOC supplies only titles and hierarchy. If a TOC is missing, the converter falls back to `h1`-`h6` headings or treats the whole file as one chapter. Very short chapters with almost no text are skipped. DRM-protected, fixed-layout, or image-only chapters are skipped or reported as errors; OCR is not supported.
 
-也可以使用 `uv run python -m ebook_to_audio.main a.txt` 或 `scripts/run.sh a.txt`。
+The tool can also be invoked with `uv run python -m ebook_to_audio.main a.txt` or `scripts/run.sh a.txt`.
 
-### 图形界面
+### GUI
 
 ```bash
 uv run ebook-to-audio-gui
-# 或
+# or
 scripts/run_gui.sh
 ```
 
-拖入 `.txt` 或 `.epub`，选择音色、输出格式和输出路径后点“开始转化”；转化中可点“取消”，已完成的块/章节会保留以便续传。M4B 格式需要本机安装 ffmpeg。
+Drag in a `.txt` or `.epub` file, choose the voice, output format, and output path, then click **Start conversion**. During conversion, click **Cancel** to stop; completed chunks and chapters remain available for resuming. M4B output requires `ffmpeg` on the local machine.
 
-## 目录结构
+## Project layout
 
-```
-scripts/                 # 启动脚本
+```text
+scripts/                 # Launch scripts
 src/ebook_to_audio/
-  main.py                    # 命令行入口（txt / epub 分派）
-  core/tts_processor.py      # 文本切分、Edge TTS 合成、缓存续传、并发
-  core/converter.py          # txt 的输出格式编排
-  core/audio_export.py       # m4b 导出：AAC、章节标记、元数据、封面
-  core/epub_processor.py     # EPUB 解析、章节规划、正文清洗
-  core/epub_converter.py     # EPUB 逐章 TTS、合并、m4b、manifest
-  gui/app.py                 # PyQt5 界面
-  gui/icon.py                # 运行时绘制的窗口图标
-  utils/file_handler.py      # 文件读写与输出名推导
-tests/                       # unittest 用例（默认不联网）
+  main.py                    # CLI entry point (txt / epub dispatch)
+  core/tts_processor.py      # Text splitting, Edge TTS synthesis, resumable cache, concurrency
+  core/converter.py          # TXT output orchestration
+  core/audio_export.py       # M4B export: AAC, chapter markers, metadata, cover
+  core/epub_processor.py     # EPUB parsing, chapter planning, content cleanup
+  core/epub_converter.py     # Per-chapter EPUB TTS, merging, M4B, manifest
+  gui/app.py                 # PyQt5 interface
+  gui/icon.py                # Runtime-generated window icon
+  utils/file_handler.py      # File I/O and output-name derivation
+tests/                       # unittest suite (offline by default)
 ```
 
-## 测试
+## Tests
 
 ```bash
 uv run python -m unittest discover -s tests -v
 ```
 
-m4b 测试会在本机生成静音音频并用 ffmpeg 校验章节/元数据；没有 ffmpeg 时自动跳过。
+M4B tests generate silent audio locally and use `ffmpeg` to verify chapters and metadata. They are skipped automatically when `ffmpeg` is unavailable.
 
-联网集成测试默认跳过，需要显式开启（包含 txt→mp3、txt→m4b、epub→mp3+m4b）：
+Network integration tests are skipped by default. Enable them explicitly to cover txt-to-MP3, txt-to-M4B, and EPUB-to-MP3+M4B:
 
 ```bash
 RUN_NETWORK_TESTS=1 uv run python -m unittest tests.test_main -v
 ```
 
-## 路线图
+## Roadmap
 
-- [x] 文本文件转 mp3（自动拆分、重试、断点续传、合并）
-- [x] 图形界面
-- [x] m4b 输出（章节标记、元数据、封面；需要系统 ffmpeg）
-- [x] 支持 epub（spine/TOC 章节、逐章续传、合并 mp3 + 多章节 m4b）
-- [ ] 更完整的清洗/兼容：OCR、QuickTime 章节轨道、更多损坏 EPUB 兜底
+- [x] Text files to MP3 (automatic splitting, retries, resumable cache, merging)
+- [x] GUI
+- [x] M4B output (chapter markers, metadata, cover; requires system `ffmpeg`)
+- [x] EPUB support (spine/TOC chapters, per-chapter resumption, merged MP3 + multi-chapter M4B)
+- [ ] More complete cleanup and compatibility: OCR, QuickTime chapter tracks, and more fallbacks for malformed EPUB files
