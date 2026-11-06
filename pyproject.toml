@@ -5,9 +5,13 @@ description = "文本转音频工具，使用 Edge TTS 服务将文本文件转�
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "edge-tts>=7.2.7",
+    "edge-tts>=7.3.1",
     "pyqt5>=5.15.10",
 ]
+
+[project.scripts]
+ebook-to-audio = "ebook_to_audio.main:main"
+ebook-to-audio-gui = "ebook_to_audio.gui.app:run_gui"
 
 [build-system]
 requires = ["setuptools", "wheel"]

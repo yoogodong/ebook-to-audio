@@ -8,7 +8,15 @@ wheels/
 
 # Virtual environments
 .venv
+venv/
 
-# temp test files
+# 转换产物与临时文件
 *.mp3
-*.txt
+*.m4b
+*.mp3.part
+*.mp3.parts/
+*.m4b.part.m4b
+# 只忽略仓库根目录下的样本书稿，避免挡住 tests/ 等目录里的 .txt 夹具
+/*.txt
+
+.DS_Store

@@ -1,528 +1,636 @@
-import sys
-import os
+"""PyQt5 图形界面：选择 txt 文件，调用核心模块转换为 mp3 / m4b。"""
+
+from __future__ import annotations
+
 import asyncio
+import os
+import subprocess
+import sys
+import tempfile
+import threading
 
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QComboBox, QProgressBar, QFileDialog,
-    QFrame, QMessageBox
-)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont
-from PyQt5.QtGui import QDragEnterEvent, QDropEvent
+from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont
+from PyQt5.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
-from ebook_to_audio.core.tts_processor import split_text
-from ebook_to_audio.utils.file_handler import read_file, get_output_filename
+from ebook_to_audio.core.audio_export import INSTALL_HINT, ffmpeg_available
+from ebook_to_audio.core.converter import (
+    ConversionResult,
+    convert_text_to_formats,
+    output_paths,
+)
+from ebook_to_audio.core.epub_converter import convert_epub_file
+from ebook_to_audio.core.epub_processor import inspect_epub
+from ebook_to_audio.core.tts_processor import (
+    DEFAULT_CONCURRENCY,
+    DEFAULT_VOICE,
+    ConversionCancelled,
+    synthesize_chunk,
+)
 from ebook_to_audio.gui.icon import set_window_icon
-import edge_tts
+from ebook_to_audio.utils.file_handler import get_output_filename, read_file
+
+# 常用音色；键为 edge-tts 的 voice id
+VOICE_OPTIONS = [
+    # 中文普通话
+    ("zh-CN-XiaoxiaoNeural", "中文 - 晓晓 (女)"),
+    ("zh-CN-XiaoyiNeural", "中文 - 小伊 (女)"),
+    ("zh-CN-YunjianNeural", "中文 - 云健 (男)"),
+    ("zh-CN-YunxiNeural", "中文 - 云希 (男)"),
+    ("zh-CN-YunxiaNeural", "中文 - 云夏 (男)"),
+    ("zh-CN-YunyangNeural", "中文 - 云阳 (男)"),
+    # 英文
+    ("en-US-AriaNeural", "英文 (US) - Aria"),
+    ("en-US-GuyNeural", "英文 (US) - Guy"),
+    ("en-GB-LibbyNeural", "英文 (GB) - Libby"),
+    ("en-GB-RyanNeural", "英文 (GB) - Ryan"),
+    ("en-AU-NatashaNeural", "英文 (AU) - Natasha"),
+    ("en-AU-WilliamNeural", "英文 (AU) - William"),
+]
+
+
+def strip_audio_extension(path: str) -> str:
+    """去掉 .mp3/.m4b 后缀，得到输出主名。"""
+    lower = path.lower()
+    for extension in (".mp3", ".m4b"):
+        if lower.endswith(extension):
+            return path[: -len(extension)]
+    return path
+
+
+def is_epub(path: str | None) -> bool:
+    return bool(path and path.lower().endswith(".epub"))
+
 
 class ConvertThread(QThread):
-    """转化线程，用于在后台执行文本转音频操作"""
+    """后台转化线程；只调用核心模块，不重复实现转换逻辑。"""
+
     progress_updated = pyqtSignal(int)
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
-    
-    def __init__(self, text_content, output_file, voice):
+    # 避免覆盖 QThread 自带的 finished 信号
+    conversion_finished = pyqtSignal(object)
+    conversion_cancelled = pyqtSignal()
+    conversion_error = pyqtSignal(str)
+
+    def __init__(
+        self,
+        input_file: str,
+        output_file: str,
+        voice: str,
+        output_format: str,
+        workers: int,
+        rate: str = "+0%",
+    ):
         super().__init__()
-        self.text_content = text_content
+        self.input_file = input_file
         self.output_file = output_file
         self.voice = voice
-    
-    def run(self):
+        self.output_format = output_format
+        self.workers = workers
+        self.rate = rate
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+
+    def run(self) -> None:
         try:
-            # 检查文本内容
-            if not self.text_content or len(self.text_content.strip()) == 0:
-                raise Exception("文本内容为空，请选择包含内容的文本文件")
-            
-            # 检查文本长度
-            MAX_CHUNK_SIZE = 900
-            if len(self.text_content) <= MAX_CHUNK_SIZE:
-                # 短文本直接转换
-                asyncio.run(self.convert_short_text())
+            if is_epub(self.input_file):
+                result: ConversionResult = convert_epub_file(
+                    self.input_file,
+                    self.output_file,
+                    self.voice,
+                    output_format=self.output_format,
+                    rate=self.rate,
+                    progress=self.progress_updated.emit,
+                    cancel_check=self._cancel_event.is_set,
+                    max_concurrency=self.workers,
+                )
             else:
-                # 长文本分割转换
-                asyncio.run(self.convert_long_text())
-            
-            self.finished.emit(self.output_file)
-        except Exception as e:
-            self.error.emit(str(e))
-    
-    async def convert_short_text(self):
-        """转换短文本"""
-        # 更新进度
-        self.progress_updated.emit(30)
-        
-        # 检查文本长度
-        text_to_convert = self.text_content
-        if len(text_to_convert) < 10:
-            # 文本太短，可能导致 Edge TTS 服务不返回音频
-            text_to_convert += " " * 10  # 添加一些空格使文本长度足够
-        
-        # 转换文本
+                result = convert_text_to_formats(
+                    self.input_file,
+                    self.output_file,
+                    self.voice,
+                    output_format=self.output_format,
+                    rate=self.rate,
+                    progress=self.progress_updated.emit,
+                    cancel_check=self._cancel_event.is_set,
+                    max_concurrency=self.workers,
+                )
+        except ConversionCancelled:
+            self.conversion_cancelled.emit()
+            return
+        except Exception as exc:
+            self.conversion_error.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.conversion_finished.emit(result)
+
+
+class PreviewThread(QThread):
+    """后台试听线程：合成一句示例语音并交给系统播放器。"""
+
+    preview_finished = pyqtSignal()
+    preview_error = pyqtSignal(str)
+
+    def __init__(self, text: str, voice: str):
+        super().__init__()
+        self.text = text
+        self.voice = voice
+
+    def run(self) -> None:
+        temp_file = None
         try:
-            # 尝试使用选择的语音
-            success, audio_data = await self._get_audio_data(text_to_convert, self.voice)
-            
-            if not success:
-                # 尝试使用默认语音
-                default_voice = "zh-CN-YunxiNeural" if self.voice.startswith("zh") else "en-US-AriaNeural"
-                self.progress_updated.emit(40)
-                success, audio_data = await self._get_audio_data(text_to_convert, default_voice)
-            
-            if not success:
-                # 尝试使用最可靠的语音
-                self.progress_updated.emit(50)
-                success, audio_data = await self._get_audio_data(text_to_convert, "zh-CN-YunxiNeural")
-            
-            if not success:
-                raise Exception("无法获取音频数据，请检查网络连接或尝试其他语音")
-            
-            # 保存音频数据
-            with open(self.output_file, "wb") as f:
-                total_chunks = len(audio_data)
-                for i, chunk in enumerate(audio_data):
-                    f.write(chunk)
-                    # 更新进度
-                    progress = 40 + (i / total_chunks) * 60
-                    self.progress_updated.emit(int(progress))
-        except Exception as e:
-            # 尝试使用简单文本
-            self.progress_updated.emit(60)
-            try:
-                simple_text = "这是一段测试文本。" if self.voice.startswith("zh") else "This is a test text."
-                success, audio_data = await self._get_audio_data(simple_text, "zh-CN-YunxiNeural")
-                if success:
-                    with open(self.output_file, "wb") as f:
-                        for chunk in audio_data:
-                            f.write(chunk)
-                    self.progress_updated.emit(100)
-                else:
-                    raise Exception(f"转换失败: {str(e)}")
-            except Exception as inner_e:
-                raise Exception(f"转换失败: {str(e)}")
-    
-    async def _get_audio_data(self, text, voice):
-        """获取音频数据"""
-        audio_data = []
-        try:
-            communicate = edge_tts.Communicate(text, voice)
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_data.append(chunk["data"])
-            return len(audio_data) > 0, audio_data
-        except Exception:
-            return False, []
-    
-    async def convert_long_text(self):
-        """转换长文本"""
-        # 分割文本
-        MAX_CHUNK_SIZE = 900
-        chunks = split_text(self.text_content, MAX_CHUNK_SIZE)
-        total_chunks = len(chunks)
-        
-        # 收集所有音频数据
-        all_audio_data = []
-        
-        try:
-            for i, chunk in enumerate(chunks):
-                # 更新进度
-                progress = 20 + (i / total_chunks) * 80
-                self.progress_updated.emit(int(progress))
-                
-                # 尝试使用选择的语音
-                success, audio_data = await self._get_audio_data(chunk, self.voice)
-                
-                if not success:
-                    # 尝试使用默认语音
-                    default_voice = "zh-CN-YunxiNeural" if self.voice.startswith("zh") else "en-US-AriaNeural"
-                    success, audio_data = await self._get_audio_data(chunk, default_voice)
-                
-                if not success:
-                    # 尝试使用最可靠的语音
-                    success, audio_data = await self._get_audio_data(chunk, "zh-CN-YunxiNeural")
-                
-                if not success:
-                    raise Exception("无法获取音频数据，请检查网络连接或尝试其他语音")
-                
-                # 添加音频数据到总集合
-                all_audio_data.extend(audio_data)
-            
-            # 合并并保存音频文件
-            with open(self.output_file, "wb") as f:
-                for chunk in all_audio_data:
-                    f.write(chunk)
-            
-        except Exception as e:
-            raise Exception(f"转换长文本失败: {str(e)}")
+            audio = asyncio.run(synthesize_chunk(self.text, self.voice))
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp:
+                temp_file = temp.name
+                temp.write(audio)
+
+            if sys.platform == "darwin":  # macOS
+                subprocess.run(["afplay", temp_file])
+            elif sys.platform == "win32":  # Windows
+                os.startfile(temp_file)  # type: ignore[attr-defined]
+            else:  # Linux
+                subprocess.run(["xdg-open", temp_file])
+        except Exception as exc:
+            self.preview_error.emit(f"{type(exc).__name__}: {exc}")
+            return
+        finally:
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                except OSError:
+                    pass
+        self.preview_finished.emit()
+
 
 class TextToAudioGUI(QMainWindow):
-    """文本转音频 GUI 应用程序"""
+    """文本转音频 GUI 应用程序。"""
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("文本转音频工具")
-        self.setGeometry(100, 100, 600, 500)
-        
-        # 设置窗口图标
+        self.setGeometry(100, 100, 640, 560)
+
         set_window_icon(self)
-        
-        # 变量初始化
-        self.input_file = None
+
+        self.input_file: str | None = None
         self.text_content = ""
-        self.selected_voice = "zh-CN-YunxiNeural"
-        self.convert_thread = None
-        
-        # 创建中央部件
+        self.convert_thread: ConvertThread | None = None
+        self.preview_thread: PreviewThread | None = None
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
-        # 主布局
+
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(20)
-        
-        # 创建文件输入区域
+
         self.create_file_input_area(main_layout)
-        
-        # 创建语音选择区域
         self.create_voice_selection(main_layout)
-        
-        # 创建转化按钮
         self.create_convert_button(main_layout)
-        
-        # 创建进度显示
         self.create_progress_display(main_layout)
-        
-        # 设置窗口接受拖放
+
         self.setAcceptDrops(True)
-    
-    def create_file_input_area(self, parent_layout):
-        """创建文件输入区域"""
+
+    # ---------- 界面构建 ----------
+
+    def create_file_input_area(self, parent_layout: QVBoxLayout) -> None:
         file_frame = QFrame()
         file_frame.setFrameShape(QFrame.StyledPanel)
         file_frame.setFrameShadow(QFrame.Raised)
         file_layout = QVBoxLayout(file_frame)
-        
-        # 标题
+
         title_label = QLabel("文件选择")
         title_label.setFont(QFont("Arial", 12, QFont.Bold))
         file_layout.addWidget(title_label)
-        
-        # 文件拖放区域
+
         self.drop_area = QLabel("拖放文本文件到此处，或点击选择文件")
         self.drop_area.setAlignment(Qt.AlignCenter)
-        self.drop_area.setMinimumHeight(150)
+        self.drop_area.setMinimumHeight(140)
         self.drop_area.setStyleSheet(
-            "QLabel { border: 2px dashed #cccccc; border-radius: 5px; background-color: #f9f9f9; padding: 20px; }"
+            "QLabel { border: 2px dashed #cccccc; border-radius: 5px; "
+            "background-color: #f9f9f9; padding: 20px; }"
         )
         self.drop_area.setFont(QFont("Arial", 12))
         self.drop_area.mousePressEvent = self.on_drop_area_click
         file_layout.addWidget(self.drop_area)
-        
-        # 文件信息标签
+
         self.file_info_label = QLabel("")
         self.file_info_label.setFont(QFont("Arial", 10))
         file_layout.addWidget(self.file_info_label)
-        
+
+        output_layout = QHBoxLayout()
+        output_label = QLabel("输出文件:")
+        output_label.setFont(QFont("Arial", 10))
+        output_layout.addWidget(output_label)
+
+        self.output_edit = QLineEdit()
+        self.output_edit.setFont(QFont("Arial", 10))
+        self.output_edit.setPlaceholderText("输出文件主名，格式自动添加 .mp3/.m4b")
+        output_layout.addWidget(self.output_edit, 1)
+
+        self.output_button = QPushButton("浏览…")
+        self.output_button.setFont(QFont("Arial", 10))
+        self.output_button.clicked.connect(self.on_browse_output)
+        output_layout.addWidget(self.output_button)
+
+        file_layout.addLayout(output_layout)
+
+        format_layout = QHBoxLayout()
+        format_label = QLabel("输出格式:")
+        format_label.setFont(QFont("Arial", 10))
+        format_layout.addWidget(format_label)
+
+        self.format_combo = QComboBox()
+        self.format_combo.setFont(QFont("Arial", 10))
+        self.format_combo.addItem("M4B（需要 ffmpeg）", "m4b")
+        self.format_combo.addItem("MP3", "mp3")
+        self.format_combo.addItem("MP3 + M4B", "both")
+        format_layout.addWidget(self.format_combo, 1)
+        file_layout.addLayout(format_layout)
+
         parent_layout.addWidget(file_frame)
-    
-    def create_voice_selection(self, parent_layout):
-        """创建语音选择区域"""
+
+    def create_voice_selection(self, parent_layout: QVBoxLayout) -> None:
         voice_frame = QFrame()
         voice_frame.setFrameShape(QFrame.StyledPanel)
         voice_frame.setFrameShadow(QFrame.Raised)
         voice_layout = QVBoxLayout(voice_frame)
-        
-        # 标题
+
         title_label = QLabel("语音选择")
         title_label.setFont(QFont("Arial", 12, QFont.Bold))
         voice_layout.addWidget(title_label)
-        
-        # 语音选择布局
+
         combo_layout = QHBoxLayout()
-        
-        # 标签
+
         voice_label = QLabel("播音员:")
         voice_label.setFont(QFont("Arial", 10))
         combo_layout.addWidget(voice_label)
-        
-        # 下拉列表
+
         self.voice_combo = QComboBox()
-        # 使用官方语音列表，中文只列出普通话
-        self.voices = [
-            # 中文普通话语音
-            ("zh-CN-XiaoxiaoNeural", "中文 - 晓晓 (女)"),
-            ("zh-CN-XiaoyiNeural", "中文 - 小伊 (女)"),
-            ("zh-CN-YunjianNeural", "中文 - 云健 (男)"),
-            ("zh-CN-YunxiNeural", "中文 - 云希 (男)"),
-            ("zh-CN-YunxiaNeural", "中文 - 云夏 (男)"),
-            ("zh-CN-YunyangNeural", "中文 - 云阳 (男)"),
-            # 英文语音
-            ("en-US-AriaNeural", "英文 (US) - Aria"),
-            ("en-US-GuyNeural", "英文 (US) - Guy"),
-            ("en-GB-LibbyNeural", "英文 (GB) - Libby"),
-            ("en-GB-RyanNeural", "英文 (GB) - Ryan"),
-            ("en-AU-NatashaNeural", "英文 (AU) - Natasha"),
-            ("en-AU-WilliamNeural", "英文 (AU) - William")
-        ]
-        
-        # 添加语音选项
-        for voice_id, voice_name in self.voices:
+        for voice_id, voice_name in VOICE_OPTIONS:
             self.voice_combo.addItem(voice_name, voice_id)
-        
+        default_voice_index = self.voice_combo.findData(DEFAULT_VOICE)
+        if default_voice_index >= 0:
+            self.voice_combo.setCurrentIndex(default_voice_index)
         self.voice_combo.setFont(QFont("Arial", 10))
         combo_layout.addWidget(self.voice_combo, 1)
-        
-        # 试听按钮
+
         self.preview_button = QPushButton("试听")
         self.preview_button.setFont(QFont("Arial", 10))
         self.preview_button.setMinimumWidth(60)
         self.preview_button.clicked.connect(self.on_preview_button_click)
         combo_layout.addWidget(self.preview_button)
-        
+
         voice_layout.addLayout(combo_layout)
+
+        workers_layout = QHBoxLayout()
+        workers_label = QLabel("并发请求:")
+        workers_label.setFont(QFont("Arial", 10))
+        workers_layout.addWidget(workers_label)
+
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setRange(1, 8)
+        self.workers_spin.setValue(DEFAULT_CONCURRENCY)
+        self.workers_spin.setToolTip("同时请求 Edge TTS 的块数；过高可能被服务端限流")
+        self.workers_spin.setFont(QFont("Arial", 10))
+        workers_layout.addWidget(self.workers_spin)
+        workers_layout.addStretch(1)
+        voice_layout.addLayout(workers_layout)
+
         parent_layout.addWidget(voice_frame)
-    
-    def create_convert_button(self, parent_layout):
-        """创建转化按钮"""
+
+    def create_convert_button(self, parent_layout: QVBoxLayout) -> None:
         button_layout = QHBoxLayout()
-        button_layout.addStretch(1)
-        
+
         self.convert_button = QPushButton("开始转化")
         self.convert_button.setFont(QFont("Arial", 12))
         self.convert_button.setMinimumHeight(40)
         self.convert_button.clicked.connect(self.on_convert_button_click)
-        button_layout.addWidget(self.convert_button, 2)
-        
-        button_layout.addStretch(1)
+        button_layout.addWidget(self.convert_button, 3)
+
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.setFont(QFont("Arial", 12))
+        self.cancel_button.setMinimumHeight(40)
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.clicked.connect(self.on_cancel_button_click)
+        button_layout.addWidget(self.cancel_button, 1)
+
         parent_layout.addLayout(button_layout)
-    
-    def create_progress_display(self, parent_layout):
-        """创建进度显示"""
+
+    def create_progress_display(self, parent_layout: QVBoxLayout) -> None:
         progress_frame = QFrame()
         progress_frame.setFrameShape(QFrame.StyledPanel)
         progress_frame.setFrameShadow(QFrame.Raised)
         progress_layout = QVBoxLayout(progress_frame)
-        
-        # 标题
+
         title_label = QLabel("转化进度")
         title_label.setFont(QFont("Arial", 12, QFont.Bold))
         progress_layout.addWidget(title_label)
-        
-        # 进度条
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setMinimum(0)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
         progress_layout.addWidget(self.progress_bar)
-        
-        # 进度文本
+
         self.progress_label = QLabel("0%")
         self.progress_label.setAlignment(Qt.AlignCenter)
         self.progress_label.setFont(QFont("Arial", 10))
         progress_layout.addWidget(self.progress_label)
-        
+
         parent_layout.addWidget(progress_frame)
-    
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        """拖放进入事件"""
+
+    # ---------- 拖放 ----------
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
             self.drop_area.setStyleSheet(
-                "QLabel { border: 2px dashed #6666ff; border-radius: 5px; background-color: #f0f0ff; padding: 20px; }"
+                "QLabel { border: 2px dashed #6666ff; border-radius: 5px; "
+                "background-color: #f0f0ff; padding: 20px; }"
             )
-    
-    def dragLeaveEvent(self, event):
-        """拖放离开事件"""
+
+    def dragLeaveEvent(self, event) -> None:
+        self._reset_drop_area_style()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        self._reset_drop_area_style()
+        if self.convert_thread and self.convert_thread.isRunning():
+            return
+        if not event.mimeData().hasUrls():
+            return
+
+        file_path = event.mimeData().urls()[0].toLocalFile()
+        if not file_path:
+            return
+        if not file_path.lower().endswith((".txt", ".epub")):
+            self.file_info_label.setText("只支持 .txt 或 .epub 文件")
+            return
+        if not os.path.exists(file_path):
+            self.file_info_label.setText("文件不存在")
+            return
+
+        self.input_file = file_path
+        self.update_file_info()
+
+    def _reset_drop_area_style(self) -> None:
         self.drop_area.setStyleSheet(
-            "QLabel { border: 2px dashed #cccccc; border-radius: 5px; background-color: #f9f9f9; padding: 20px; }"
+            "QLabel { border: 2px dashed #cccccc; border-radius: 5px; "
+            "background-color: #f9f9f9; padding: 20px; }"
         )
-    
-    def dropEvent(self, event: QDropEvent):
-        """拖放事件"""
-        self.drop_area.setStyleSheet(
-            "QLabel { border: 2px dashed #cccccc; border-radius: 5px; background-color: #f9f9f9; padding: 20px; }"
-        )
-        
-        # 获取拖放的文件路径
-        if event.mimeData().hasUrls():
-            url = event.mimeData().urls()[0]
-            file_path = url.toLocalFile()
-            if os.path.exists(file_path) and file_path.endswith('.txt'):
-                self.input_file = file_path
-                self.update_file_info()
-    
-    def on_drop_area_click(self, event):
-        """拖放区域点击事件"""
-        # 打开文件选择对话框
+
+    def on_drop_area_click(self, event) -> None:
+        if self.convert_thread and self.convert_thread.isRunning():
+            return
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择文本文件", "", "文本文件 (*.txt);;所有文件 (*.*)"
+            self,
+            "选择文本或电子书文件",
+            "",
+            "文本/电子书 (*.txt *.epub);;所有文件 (*.*)",
         )
         if file_path:
             self.input_file = file_path
             self.update_file_info()
-    
-    def update_file_info(self):
-        """更新文件信息"""
-        if self.input_file:
-            # 读取文件内容
-            try:
-                self.text_content = read_file(self.input_file)
-                # 计算字符/单词数量
-                text = self.text_content
-                
-                # 统计中文字符数
-                chinese_chars = 0
-                for char in text:
-                    if '\u4e00' <= char <= '\u9fff':
-                        chinese_chars += 1
-                
-                # 统计英文字母数
-                english_chars = 0
-                for char in text:
-                    if 'a' <= char.lower() <= 'z':
-                        english_chars += 1
-                
-                # 统计英文单词数
-                words = text.split()
-                word_count = 0
-                for word in words:
-                    # 检查是否是英文单词（至少包含一个英文字母）
-                    if any('a' <= char.lower() <= 'z' for char in word):
-                        word_count += 1
-                
-                # 更新文件信息
-                file_name = os.path.basename(self.input_file)
-                if chinese_chars > 0:
-                    self.file_info_label.setText(f"文件: {file_name} | 中文字符: {chinese_chars} | 英文单词: {word_count}")
-                else:
-                    self.file_info_label.setText(f"文件: {file_name} | 英文单词: {word_count}")
-                # 更新拖放区域文本
-                self.drop_area.setText(f"已选择文件: {file_name}")
-            except Exception as e:
-                self.file_info_label.setText(f"错误: {e}")
-    
-    def on_convert_button_click(self):
-        """转化按钮点击事件"""
+
+    def on_browse_output(self) -> None:
+        output_format = self.format_combo.itemData(self.format_combo.currentIndex())
+        if self.output_edit.text().strip():
+            default = strip_audio_extension(self.output_edit.text().strip())
+        elif self.input_file:
+            default = strip_audio_extension(get_output_filename(self.input_file))
+        else:
+            default = ""
+
+        if output_format == "mp3":
+            default += ".mp3"
+            file_filter = "MP3 文件 (*.mp3)"
+        elif output_format == "m4b":
+            default += ".m4b"
+            file_filter = "M4B 文件 (*.m4b)"
+        else:
+            file_filter = "音频文件 (*.mp3 *.m4b)"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "选择输出文件", default, file_filter
+        )
+        if file_path:
+            self.output_edit.setText(strip_audio_extension(file_path))
+
+    # ---------- 文件信息 ----------
+
+    def update_file_info(self) -> None:
         if not self.input_file:
-            QMessageBox.warning(self, "警告", "请先选择一个文本文件")
             return
-        
-        # 获取选择的语音
-        voice_index = self.voice_combo.currentIndex()
-        self.selected_voice = self.voice_combo.itemData(voice_index)
-        
-        # 禁用按钮
-        self.convert_button.setEnabled(False)
-        
-        # 重置进度
+        file_name = os.path.basename(self.input_file)
+
+        if is_epub(self.input_file):
+            try:
+                meta = inspect_epub(self.input_file)
+            except Exception as exc:
+                self.file_info_label.setText(f"错误: {exc}")
+                return
+            self.text_content = ""
+            info = f"文件: {file_name} | {meta.title}"
+            if meta.author:
+                info += f" | {meta.author}"
+            info += f" | 章节: {meta.chapter_count}"
+            self.file_info_label.setText(info)
+            self.drop_area.setText(f"已选择文件: {file_name}")
+            self.output_edit.setText(
+                strip_audio_extension(get_output_filename(self.input_file))
+            )
+            return
+
+        try:
+            self.text_content = read_file(self.input_file)
+        except Exception as exc:
+            self.file_info_label.setText(f"错误: {exc}")
+            return
+
+        text = self.text_content
+        chinese_chars = sum(1 for char in text if "一" <= char <= "鿿")
+        words = text.split()
+        word_count = sum(
+            1 for word in words if any("a" <= char.lower() <= "z" for char in word)
+        )
+
+        if chinese_chars > 0:
+            self.file_info_label.setText(
+                f"文件: {file_name} | 中文字符: {chinese_chars} | 英文单词: {word_count}"
+            )
+        else:
+            self.file_info_label.setText(f"文件: {file_name} | 英文单词: {word_count}")
+
+        self.drop_area.setText(f"已选择文件: {file_name}")
+        self.output_edit.setText(strip_audio_extension(get_output_filename(self.input_file)))
+
+    # ---------- 转化 ----------
+
+    def on_convert_button_click(self) -> None:
+        if not self.input_file:
+            QMessageBox.warning(self, "警告", "请先选择一个 txt 或 epub 文件")
+            return
+        epub_input = is_epub(self.input_file)
+        if not epub_input and (not self.text_content or not self.text_content.strip()):
+            QMessageBox.warning(self, "警告", "文本内容为空，请选择包含内容的文本文件")
+            return
+
+        output_format = self.format_combo.itemData(self.format_combo.currentIndex())
+        base = strip_audio_extension(self.output_edit.text().strip())
+        if not base:
+            base = strip_audio_extension(get_output_filename(self.input_file))
+        self.output_edit.setText(base)
+
+        if output_format in ("m4b", "both") and not ffmpeg_available():
+            QMessageBox.critical(self, "缺少 ffmpeg", INSTALL_HINT)
+            return
+
+        if epub_input:
+            targets = {
+                "mp3": [base + ".mp3"],
+                "m4b": [base + ".m4b"],
+                "both": [base + ".mp3", base + ".m4b"],
+            }[output_format]
+        else:
+            mp3_path, m4b_path = output_paths(self.input_file, base, output_format)
+            targets = {
+                "mp3": [mp3_path],
+                "m4b": [m4b_path],
+                "both": [mp3_path, m4b_path],
+            }[output_format]
+        existing = [path for path in targets if os.path.exists(path)]
+        if existing:
+            answer = QMessageBox.question(
+                self,
+                "文件已存在",
+                "以下文件已存在：\n" + "\n".join(existing) + "\n\n是否覆盖？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+
+        voice = self.voice_combo.itemData(self.voice_combo.currentIndex())
         self.progress_bar.setValue(0)
         self.progress_label.setText("0%")
-        
-        # 生成输出文件名
-        output_file = get_output_filename(self.input_file)
-        
-        # 创建并启动转化线程
-        self.convert_thread = ConvertThread(self.text_content, output_file, self.selected_voice)
+        self._set_busy(True)
+
+        self.convert_thread = ConvertThread(
+            self.input_file, base, voice, output_format, self.workers_spin.value()
+        )
         self.convert_thread.progress_updated.connect(self.on_progress_updated)
-        self.convert_thread.finished.connect(self.on_convert_finished)
-        self.convert_thread.error.connect(self.on_convert_error)
+        self.convert_thread.conversion_finished.connect(self.on_convert_finished)
+        self.convert_thread.conversion_cancelled.connect(self.on_convert_cancelled)
+        self.convert_thread.conversion_error.connect(self.on_convert_error)
         self.convert_thread.start()
-    
-    def on_progress_updated(self, value):
-        """进度更新事件"""
+
+    def on_cancel_button_click(self) -> None:
+        if self.convert_thread and self.convert_thread.isRunning():
+            self.cancel_button.setEnabled(False)
+            self.progress_label.setText("正在取消…")
+            self.convert_thread.cancel()
+
+    def _set_busy(self, busy: bool) -> None:
+        self.convert_button.setEnabled(not busy)
+        self.preview_button.setEnabled(not busy)
+        self.cancel_button.setEnabled(busy)
+        self.output_edit.setEnabled(not busy)
+        self.output_button.setEnabled(not busy)
+        self.voice_combo.setEnabled(not busy)
+        self.format_combo.setEnabled(not busy)
+        self.workers_spin.setEnabled(not busy)
+
+    def on_progress_updated(self, value: int) -> None:
         self.progress_bar.setValue(value)
         self.progress_label.setText(f"{value}%")
-    
-    def on_convert_finished(self, output_file):
-        """转化完成事件"""
+
+    def on_convert_finished(self, result: ConversionResult) -> None:
         self.progress_bar.setValue(100)
         self.progress_label.setText("转化完成！")
-        QMessageBox.information(self, "成功", f"转化完成！音频文件已保存为: {output_file}")
-        # 启用按钮
-        self.convert_button.setEnabled(True)
-    
-    def on_convert_error(self, error_msg):
-        """转化错误事件"""
-        QMessageBox.critical(self, "错误", f"转化失败: {error_msg}")
-        # 启用按钮
-        self.convert_button.setEnabled(True)
+        self._set_busy(False)
+        lines = ["转化完成！"]
+        if result.chapter_count:
+            lines.append(f"章节数: {result.chapter_count}")
+        if result.chapters_dir:
+            lines.append(f"章节文件: {result.chapters_dir}")
+        if result.mp3:
+            lines.append(f"MP3: {result.mp3}")
+        if result.m4b:
+            lines.append(f"M4B: {result.m4b}")
+        QMessageBox.information(self, "成功", "\n".join(lines))
 
-    def on_preview_button_click(self):
-        """试听按钮点击事件"""
-        # 获取选择的语音
-        voice_index = self.voice_combo.currentIndex()
-        selected_voice = self.voice_combo.itemData(voice_index)
-        
-        # 为不同语言的语音准备试听文本
-        if selected_voice.startswith("zh"):
-            preview_text = "这是一段试听文本，用于测试语音效果。"
-        else:
-            preview_text = "This is a sample text for testing the voice quality."
-        
-        # 禁用试听按钮
+    def on_convert_cancelled(self) -> None:
+        self._set_busy(False)
+        self.progress_label.setText("已取消")
+        QMessageBox.information(
+            self, "已取消", "已取消转换。已完成的音频块会保留，再次点击转化可继续。"
+        )
+
+    def on_convert_error(self, error_msg: str) -> None:
+        self._set_busy(False)
+        self.progress_label.setText("转化失败")
+        QMessageBox.critical(self, "错误", f"转化失败: {error_msg}")
+
+    # ---------- 试听 ----------
+
+    def on_preview_button_click(self) -> None:
+        voice = self.voice_combo.itemData(self.voice_combo.currentIndex())
+        preview_text = (
+            "这是一段试听文本，用于测试语音效果。"
+            if voice.startswith("zh")
+            else "This is a sample text for testing the voice quality."
+        )
+
         self.preview_button.setEnabled(False)
-        
-        # 创建并启动试听线程
-        self.preview_thread = PreviewThread(preview_text, selected_voice)
-        self.preview_thread.finished.connect(lambda: self.preview_button.setEnabled(True))
-        self.preview_thread.error.connect(lambda msg: QMessageBox.warning(self, "警告", f"试听失败: {msg}"))
+        self.preview_thread = PreviewThread(preview_text, voice)
+        self.preview_thread.preview_finished.connect(
+            lambda: self.preview_button.setEnabled(True)
+        )
+        self.preview_thread.preview_error.connect(self.on_preview_error)
         self.preview_thread.start()
 
+    def on_preview_error(self, message: str) -> None:
+        self.preview_button.setEnabled(True)
+        QMessageBox.warning(self, "警告", f"试听失败: {message}")
 
-class PreviewThread(QThread):
-    """试听线程，用于在后台执行语音试听操作"""
-    finished = pyqtSignal()
-    error = pyqtSignal(str)
-    
-    def __init__(self, text, voice):
-        super().__init__()
-        self.text = text
-        self.voice = voice
-    
-    def run(self):
-        try:
-            # 使用系统播放器播放音频
-            import tempfile
-            import subprocess
-            
-            # 生成临时音频文件
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp:
-                temp_file = temp.name
-            
-            # 转换文本为音频
-            asyncio.run(self.convert_text_to_audio(self.text, self.voice, temp_file))
-            
-            # 播放音频文件
-            if sys.platform == "darwin":  # macOS
-                subprocess.run(["afplay", temp_file])
-            elif sys.platform == "win32":  # Windows
-                subprocess.run(["start", "", temp_file], shell=True)
-            else:  # Linux
-                subprocess.run(["xdg-open", temp_file])
-            
-            # 清理临时文件
-            if os.path.exists(temp_file):
-                try:
-                    os.unlink(temp_file)
-                except:
-                    pass
-            
-            self.finished.emit()
-        except Exception as e:
-            self.error.emit(str(e))
-    
-    async def convert_text_to_audio(self, text, voice, output_file):
-        """转换文本为音频"""
-        communicate = edge_tts.Communicate(text, voice)
-        
-        with open(output_file, "wb") as f:
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    f.write(chunk["data"])
+    # ---------- 关闭 ----------
+
+    def closeEvent(self, event) -> None:
+        if self.convert_thread and self.convert_thread.isRunning():
+            self.convert_thread.cancel()
+            if not self.convert_thread.wait(5000):
+                # 网络请求可能还在等待超时，强行退出会让 QThread 崩溃
+                QMessageBox.information(
+                    self, "正在取消", "正在取消转换，请稍候再关闭窗口。已完成的块会保留。"
+                )
+                event.ignore()
+                return
+        if self.preview_thread and self.preview_thread.isRunning():
+            if not self.preview_thread.wait(5000):
+                QMessageBox.information(
+                    self, "试听中", "试听仍在进行，请稍候再关闭窗口。"
+                )
+                event.ignore()
+                return
+        event.accept()
 
 
-def run_gui():
-    """运行 GUI 应用程序"""
+def run_gui() -> None:
     app = QApplication(sys.argv)
     window = TextToAudioGUI()
     window.show()
