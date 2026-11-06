@@ -141,3 +141,9 @@ RUN_NETWORK_TESTS=1 uv run python -m unittest tests.test_main -v
 - [x] M4B 输出（章节标记、元数据、封面；需要系统 `ffmpeg`）
 - [x] 支持 EPUB（spine/TOC 章节、逐章续传、合并 MP3 + 多章节 M4B）
 - [ ] 更完整的清洗/兼容：OCR、QuickTime 章节轨道、更多损坏 EPUB 兜底
+
+## 许可证
+
+本项目采用 **GPL-3.0-only**，完整条款见 [LICENSE](LICENSE)。
+
+图形界面依赖 PyQt5；PyQt5 提供 GPLv3 和商业授权两种许可。如果没有获得商业授权，分发本项目或其修改版本时需要遵守 GPLv3，包括向接收者提供对应源代码。

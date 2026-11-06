@@ -141,3 +141,9 @@ RUN_NETWORK_TESTS=1 uv run python -m unittest tests.test_main -v
 - [x] M4B output (chapter markers, metadata, cover; requires system `ffmpeg`)
 - [x] EPUB support (spine/TOC chapters, per-chapter resumption, merged MP3 + multi-chapter M4B)
 - [ ] More complete cleanup and compatibility: OCR, QuickTime chapter tracks, and more fallbacks for malformed EPUB files
+
+## License
+
+This project is licensed under **GPL-3.0-only**. See [LICENSE](LICENSE) for the full terms.
+
+The GUI depends on PyQt5, which is available under GPLv3 or a commercial license. If you distribute this project or a modified version without a commercial PyQt license, you must comply with GPLv3, including providing the corresponding source code.

@@ -3,7 +3,11 @@ name = "ebook-to-audio"
 version = "0.1.0"
 description = "文本转音频工具，使用 Edge TTS 服务将文本文件转换为 MP3 音频文件"
 readme = "README.md"
+license = { text = "GPL-3.0-only" }
 requires-python = ">=3.13"
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+]
 dependencies = [
     "edge-tts>=7.3.1",
     "pyqt5>=5.15.10",
