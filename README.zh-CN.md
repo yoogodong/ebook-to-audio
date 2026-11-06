@@ -34,6 +34,17 @@ sudo apt install ffmpeg      # Debian/Ubuntu
 
 ## 用法
 
+### 图形界面
+
+```bash
+uv run ebook-to-audio-gui
+# 或
+scripts/run_gui.sh
+```
+
+拖入 `.txt` 或 `.epub`，选择音色、输出格式和输出路径后点“开始转化”；转化中可点“取消”，已完成的块/章节会保留以便续传。M4B 格式需要本机安装 `ffmpeg`。
+
+
 ### 命令行
 
 ```bash
@@ -92,16 +103,6 @@ M4B 是默认格式；没有安装 `ffmpeg` 时会报错，可用 `-f mp3` 只�
 章节归属以 spine（阅读顺序）为准，TOC 只提供标题和层级；目录缺失时回退到 h1-h6 或整文件一章。过短、几乎无文字的章节会被跳过；DRM 加密、固定版式或纯图片章节会被跳过/报错，不做 OCR。
 
 也可以使用 `uv run python -m ebook_to_audio.main a.txt` 或 `scripts/run.sh a.txt`。
-
-### 图形界面
-
-```bash
-uv run ebook-to-audio-gui
-# 或
-scripts/run_gui.sh
-```
-
-拖入 `.txt` 或 `.epub`，选择音色、输出格式和输出路径后点“开始转化”；转化中可点“取消”，已完成的块/章节会保留以便续传。M4B 格式需要本机安装 `ffmpeg`。
 
 ## 目录结构
 

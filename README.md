@@ -34,6 +34,16 @@ sudo apt install ffmpeg      # Debian/Ubuntu
 
 ## Usage
 
+### GUI
+
+```bash
+uv run ebook-to-audio-gui
+# or
+scripts/run_gui.sh
+```
+
+Drag in a `.txt` or `.epub` file, choose the voice, output format, and output path, then click **Start conversion**. During conversion, click **Cancel** to stop; completed chunks and chapters remain available for resuming. M4B output requires `ffmpeg` on the local machine.
+
 ### Command line
 
 ```bash
@@ -93,15 +103,6 @@ Chapter ownership follows the spine (reading order); the TOC supplies only title
 
 The tool can also be invoked with `uv run python -m ebook_to_audio.main a.txt` or `scripts/run.sh a.txt`.
 
-### GUI
-
-```bash
-uv run ebook-to-audio-gui
-# or
-scripts/run_gui.sh
-```
-
-Drag in a `.txt` or `.epub` file, choose the voice, output format, and output path, then click **Start conversion**. During conversion, click **Cancel** to stop; completed chunks and chapters remain available for resuming. M4B output requires `ffmpeg` on the local machine.
 
 ## Project layout
 
