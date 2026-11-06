@@ -1,17 +1,45 @@
 [project]
 name = "ebook-to-audio"
 version = "0.1.0"
-description = "文本转音频工具，使用 Edge TTS 服务将文本文件转换为 MP3 音频文件"
+description = "Convert EPUB and TXT books into chaptered M4B or MP3 audiobooks with Microsoft Edge TTS."
 readme = "README.md"
-license = { text = "GPL-3.0-only" }
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.13"
+keywords = [
+    "audiobook",
+    "ebook",
+    "edge-tts",
+    "epub",
+    "m4b",
+    "mp3",
+    "text-to-speech",
+    "tts",
+]
 classifiers = [
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Natural Language :: Chinese (Simplified)",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Utilities",
 ]
 dependencies = [
     "edge-tts>=7.3.1",
     "pyqt5>=5.15.10",
 ]
+
+[project.urls]
+Homepage = "https://github.com/yoogodong/ebook-to-audio"
+Repository = "https://github.com/yoogodong/ebook-to-audio"
+Issues = "https://github.com/yoogodong/ebook-to-audio/issues"
+Releases = "https://github.com/yoogodong/ebook-to-audio/releases"
+Changelog = "https://github.com/yoogodong/ebook-to-audio/blob/main/CHANGELOG.md"
 
 [project.scripts]
 ebook-to-audio = "ebook_to_audio.main:main"

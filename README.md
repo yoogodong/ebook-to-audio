@@ -2,10 +2,26 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Convert e-book text into speech (MP3 / M4B) with Microsoft Edge TTS through the [`edge-tts`](https://github.com/rany2/edge-tts) library. It is free and does not require an API key.
+Turn EPUB and TXT books into chaptered M4B or MP3 audiobooks. Free, local, and no API key required.
+
+[![Latest release](https://img.shields.io/github/v/release/yoogodong/ebook-to-audio?display_name=tag&sort=semver)](https://github.com/yoogodong/ebook-to-audio/releases)
+[![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue.svg)](pyproject.toml)
+
+## Quick start
+
+```bash
+git clone https://github.com/yoogodong/ebook-to-audio.git
+cd ebook-to-audio
+uv sync
+uv run ebook-to-audio book.epub
+```
+
+`book.epub` produces a chaptered `book.m4b` plus per-chapter MP3 files. M4B output requires system `ffmpeg`; see [Requirements](#requirements) for install commands.
 
 ## Features
 
+- **EPUB / TXT input and M4B / MP3 output**
 - **M4B is the default output format; the default Chinese narrator is Yun Jian (`zh-CN-YunjianNeural`)**
 - `.txt` to `.m4b`, `.mp3`, or both, with automatic sentence-aware splitting into chunks of at most 900 characters
 - `.epub` to a chapter-marked M4B plus per-chapter MP3 files, with an optional merged MP3

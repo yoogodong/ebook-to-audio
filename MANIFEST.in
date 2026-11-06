@@ -1,0 +1,9 @@
+include CHANGELOG.md
+include LICENSE
+include README.md
+include README.zh-CN.md
+include pyproject.toml
+
+recursive-include docs *.md *.png
+recursive-include scripts *.sh
+recursive-include tests *.py

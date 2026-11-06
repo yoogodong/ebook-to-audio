@@ -2,10 +2,26 @@
 
 [English](README.md) | **简体中文**
 
-把电子书文本转换成语音（MP3 / M4B），使用微软 Edge TTS（[`edge-tts`](https://github.com/rany2/edge-tts) 库，免费、无需 API Key）。
+把 EPUB 和 TXT 电子书转换成带章节的 M4B 或 MP3 有声书。免费、本地运行、无需 API Key。
+
+[![最新版本](https://img.shields.io/github/v/release/yoogodong/ebook-to-audio?display_name=tag&sort=semver)](https://github.com/yoogodong/ebook-to-audio/releases)
+[![许可证：GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue.svg)](pyproject.toml)
+
+## 快速开始
+
+```bash
+git clone https://github.com/yoogodong/ebook-to-audio.git
+cd ebook-to-audio
+uv sync
+uv run ebook-to-audio book.epub
+```
+
+`book.epub` 会生成带章节的 `book.m4b`，并输出逐章 MP3。M4B 输出需要系统安装 `ffmpeg`，安装命令见[环境](#环境)。
 
 ## 目前支持
 
+- **输入 EPUB / TXT，输出 M4B / MP3**
 - **默认输出 M4B；默认中文播音员为云健（`zh-CN-YunjianNeural`）**
 - `.txt` → `.m4b` / `.mp3` / 两者，自动按句切分，每块不超过 900 字
 - `.epub` → 按章节输出 M4B + 章节 MP3；可选合并 MP3
