@@ -44,6 +44,8 @@ scripts/run_gui.sh
 
 Drag in a `.txt` or `.epub` file, choose the voice, output format, and output path, then click **Start conversion**. During conversion, click **Cancel** to stop; completed chunks and chapters remain available for resuming. M4B output requires `ffmpeg` on the local machine.
 
+![ebook-to-audio GUI](docs/images/gui.png)
+
 ### Command line
 
 ```bash
